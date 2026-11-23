@@ -18,6 +18,11 @@ on:
         description: 'Add Widescreen-mac.dmg to that release (off = build and check only)'
         type: boolean
         default: false
+      release:
+        description: 'Another release that gets the disk image as well, for example v1.9.6 (empty = none)'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -33,6 +38,7 @@ jobs:
     timeout-minutes: 45
     env:
       TAG: ${{ inputs.tag }}
+      ALSO: ${{ inputs.release }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -103,7 +109,9 @@ jobs:
         if: ${{ inputs.publish && steps.check1.outcome == 'success' && steps.check2.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$TAG" Widescreen-mac.dmg --repo "$GITHUB_REPOSITORY" --clobber
+        run: |
+          gh release upload "$TAG" Widescreen-mac.dmg --repo "$GITHUB_REPOSITORY" --clobber
+          if [ -n "$ALSO" ]; then gh release upload "$ALSO" Widescreen-mac.dmg --repo "$GITHUB_REPOSITORY" --clobber; fi
 
       - name: Result
         run: |

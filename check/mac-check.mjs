@@ -114,6 +114,10 @@ async function ready(ms) {
   for (let i = 0; i < ms / 100; i++) { try { if (await ev(`!!(window.WS && WS.state && WS.state.project)`)) return true; } catch (e) { } await wait(100); }
   return false;
 }
+const key = async (k, code, vk, modifiers, text) => {
+  await send('Input.dispatchKeyEvent', { type: text ? 'keyDown' : 'rawKeyDown', key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers: modifiers || 0, text });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers: modifiers || 0 });
+};
 const safe = async (name, fn, must) => { try { await fn(); } catch (e) { note(name, false, 'the check itself broke: ' + String(e.message || e).slice(0, 300), must); } };
 
 const t0 = Date.now();
@@ -160,9 +164,13 @@ if (up) {
   if (!quick) await plays(3, 'a 4K video plays', false);
   await plays(1, 'a picture shows', true);
 
-  await safe('the sound picture of a clip', async () => {
-    const r = await page(`const c = S.project.layers[0].clips[0]; const w = await Promise.race([E.waveform(c), wait(60000).then(() => 'timeout')]); return w === 'timeout' ? 'timeout' : (w ? w.length : 0);`);
-    note('the sound picture of a clip is made', typeof r === 'number' && r > 100, r, false);
+  await safe('the bar of the Clip panel', async () => {
+    const r = await page(`E.trigger(0, 0); await wait(900); window.__ui.select(0, 0, 'clip'); await wait(1500);
+      const bar = document.querySelector('#inspBody .tl .tl-bar'); if (!bar) return null;
+      const br = bar.getBoundingClientRect(), hd = bar.querySelector('b').getBoundingClientRect(), L = S.project.layers[0], d = S.preview && S.preview.layers.get(L.id), el = d && d.cur && d.cur.el;
+      return { waves: !!document.querySelector('#inspBody .tl canvas'), height: Math.round(br.height), handleAt: +((hd.left + hd.width / 2 - br.left) / br.width).toFixed(3), clipAt: el ? +(el.currentTime / el.duration).toFixed(3) : null,
+        shown: getComputedStyle(bar.querySelector('b')).display !== 'none' };`);
+    note('the Clip panel has a plain bar, and its handle is where the clip is', !!r && !r.waves && r.height === 26 && r.shown && r.clipAt != null && Math.abs(r.handleAt - r.clipAt) < 0.06, r, false);
   });
 
   if (!quick) await safe('copies', async () => {
@@ -193,10 +201,6 @@ if (up) {
 
   // the keyboard, and the words a Mac user reads
   await safe('keys and words', async () => {
-    const key = async (k, code, vk, modifiers, text) => {
-      await send('Input.dispatchKeyEvent', { type: text ? 'keyDown' : 'rawKeyDown', key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers: modifiers || 0, text });
-      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers: modifiers || 0 });
-    };
     const paused = () => page(`const p = E.playing(S.project.layers[0]); return p ? !!p.r.paused : null;`);
     await page(`E.trigger(0, 0); await wait(1200); if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); return 0;`);
     const p0 = await paused();
@@ -212,8 +216,12 @@ if (up) {
     const words = await page(`document.querySelector('#menubar button[data-menu="app"]').click(); await wait(300);
       const keys = [...document.querySelectorAll('.menu .mi .k')].map(x => x.textContent);
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await wait(200);
-      return { device: document.getElementById('sndName').textContent, quitKey: keys[keys.length - 1] || '', mac: WS.mac };`);
-    note('the words fit this system: the sound device and the key that quits', isMac ? (words.mac === true && words.device === 'System default device' && words.quitKey === 'Cmd+Q') : (words.device === 'Windows default device' && words.quitKey === 'Alt+F4'), words, false);
+      return { device: document.getElementById('sndName').textContent, quitKey: keys[keys.length - 1] || '', mac: WS.mac,
+        buttons: [...document.querySelectorAll('#outputsBody .outbtns button')].map(b => b.textContent.trim()), displays: [...document.querySelectorAll('#outputsBody .disp b')].map(b => b.textContent.trim()) };`);
+    note('the words fit this system: the sound device, the key that quits, the display settings', isMac
+      ? (words.mac === true && words.device === 'System default device' && words.quitKey === 'Cmd+Q' && words.buttons.includes('Display settings') && !words.buttons.some(b => /Windows/.test(b)))
+      : (words.device === 'Windows default device' && words.quitKey === 'Alt+F4' && words.buttons.includes('Windows display settings')), words, false);
+    note('the displays are numbered 1, 2, 3 without a gap', words.displays.length >= 1 && words.displays.every((d, i) => d.indexOf('Display ' + (i + 1)) === 0), words.displays, false);
   });
 
   // outputs
@@ -223,8 +231,37 @@ if (up) {
       return { led, leader: S.leader, kind: S.previewKind, open: S.outputs.open.map(o => ({ id: o.id, mode: o.mode, w: o.w, h: o.h })), stats: S.stats, mirror: S.frameW || 0 };`);
     screen('screen-3-window-output.png'); await shot('window-3-with-window-output.png');
     note('an output opens in a window, takes over the show and reports its pictures', r.led && r.open.length === 1 && !!r.stats && r.stats.fps > 0, r, true);
-    await page(`E.closeAllOutputs(); await until(() => S.leader === 'preview' || !S.outputs.open.length, 10000); return 0;`);
   }, true);
+  // The Advanced Output editor during a show. Its picture used to be the light copy the output sends for the monitor
+  // (30 small pictures a second); now the control window draws the composition itself, joining the running clip on
+  // its next full picture.
+  await safe('the Advanced Output editor during a show', async () => {
+    const before = await page(`return { kind: S.previewKind, leader: S.leader, outputs: S.outputs.open.length };`);
+    if (!before.outputs) { note('the Advanced Output editor during a show', false, 'no output is open', false); return; }
+    await key('a', 'KeyA', 65, (isMac ? 4 : 2) | 8);
+    const r = await page(`const MP = window.__ui.MP, c = document.getElementById('mpPic'), g = document.createElement('canvas'); g.width = 48; g.height = 27; const x = g.getContext('2d', { willReadFrequently: true });
+      const look = () => { x.drawImage(c, 0, 0, 48, 27); const d = x.getImageData(0, 0, 48, 27).data; let a = 0, lit = 0; for (let i = 0; i < d.length; i += 4) { a = (a * 31 + d[i] + d[i + 1] * 3 + d[i + 2] * 7) >>> 0; if (d[i] + d[i + 1] + d[i + 2] > 60) lit++; } return { a, lit }; };
+      await until(() => MP.open, 4000);
+      const st = () => Object.assign({}, (S.renderers.get(S.leader) || {}).status || {});
+      const st0 = st(), t0 = performance.now(); let dark = 0, looks = 0, waited = false;
+      await wait(150);
+      while (performance.now() - t0 < 30000 && (S.editorWarm || !S.preview)) { looks++; if (look().lit < 300) dark++; const own = S.preview && S.preview.getStatus().layers[S.project.layers[0].id]; if (own && own.hold) waited = true; await wait(50); }
+      const ownAfterMs = Math.round(performance.now() - t0);
+      await wait(1200);
+      const n0 = MP.paints, t1 = performance.now(), sums = new Set();
+      for (let i = 0; i < 30; i++) { const l = look(); sums.add(l.a); if (l.lit < 300) dark++; looks++; await wait(50); }
+      const st1 = st(), own = S.preview ? S.preview.getStatus().layers[S.project.layers[0].id] : null, lead = st1.layers ? st1.layers[S.project.layers[0].id] : null;
+      return { open: MP.open, kind: S.previewKind, own: !!S.preview, light: S.editorLight, ownPictureAfterMs: ownAfterMs, waitedOnAFullPicture: waited, dark, looks, picturesPerSecond: Math.round((MP.paints - n0) / ((performance.now() - t1) / 1000)), different: sums.size,
+        secondsApartFromShow: own && lead && own.t != null && lead.t != null ? +(own.t - (lead.t + (Date.now() - st1.at) / 1000)).toFixed(3) : null,
+        outputLost: (st1.dropped | 0) - (st0.dropped | 0), outputShown: (st1.total | 0) - (st0.total | 0), outputFps: st1.fps, leader: S.leader };`);
+    await shot('window-5-editor-during-show.png');
+    note('during a show the Advanced Output editor draws the picture itself, and it moves (' + r.picturesPerSecond + ' pictures a second)', r.open && r.kind === 'live' && r.own && !r.light && r.different >= 10 && r.picturesPerSecond >= 20, r, false);
+    note('its picture is never black while it opens, and the output goes on leading the show', r.dark === 0 && r.leader === before.leader && r.outputFps > 0, { dark: r.dark, looks: r.looks, leader: r.leader, outputFps: r.outputFps, outputLost: r.outputLost, outputShown: r.outputShown }, false);
+    await key('Escape', 'Escape', 27); await wait(900);
+    const shut = await page(`return { open: window.__ui.MP.open, kind: S.previewKind, own: !!S.preview };`);
+    note('closing the editor gives the monitor its light copy back', !shut.open && shut.kind === 'mirror' && !shut.own, shut, false);
+  });
+  await safe('closing the output', async () => { await page(`E.closeAllOutputs(); await until(() => S.leader === 'preview' || !S.outputs.open.length, 10000); return 0;`); });
   await safe('a fullscreen output', async () => {
     const r = await page(`const d = S.displays[0]; E.trigger(0, 0); await wait(500); E.openFullscreen(d.id);
       const led = await until(() => S.leader && S.leader !== 'preview', 30000); await wait(4000);
