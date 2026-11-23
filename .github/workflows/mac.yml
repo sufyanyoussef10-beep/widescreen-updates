@@ -1,0 +1,112 @@
+# Makes the Mac download of Widescreen on one of GitHub's Mac machines: ONE disk image (.dmg) for Apple-chip and
+# Intel Macs, from the two Mac zips of a release. Before anything is published the app is started there for real
+# and checked (check/mac-check.mjs): it comes up, finds its ffmpeg, plays a video, makes its copies, opens outputs.
+#
+# Started by hand: Actions > Mac disk image > Run workflow. The pictures and the report of the check are kept with
+# the run for a week (the "mac" artifact).
+name: Mac disk image
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'The release that holds Widescreen-Mac-Apple-chip.zip and Widescreen-Mac-Intel.zip'
+        required: true
+        default: 'mac-test-1'
+        type: string
+      publish:
+        description: 'Add Widescreen-mac.dmg to that release (off = build and check only)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mac
+  cancel-in-progress: false
+
+jobs:
+  mac:
+    name: Mac (Apple and Intel chips)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Get the two apps of the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'Widescreen-Mac-*.zip' --dir in
+          mkdir arm64 x64 try
+          ditto -x -k in/Widescreen-Mac-Apple-chip.zip arm64
+          ditto -x -k in/Widescreen-Mac-Intel.zip x64
+          ditto -x -k in/Widescreen-Mac-Apple-chip.zip try
+          ls -la arm64 x64
+          lipo -archs arm64/Widescreen.app/Contents/MacOS/Electron
+          lipo -archs x64/Widescreen.app/Contents/MacOS/Electron
+
+      - name: Check 1 - the Apple-chip app exactly as it is on the page
+        id: check1
+        continue-on-error: true
+        timeout-minutes: 15
+        run: node check/mac-check.mjs try/Widescreen.app out/as-published
+
+      - name: One app for both kinds of Mac
+        run: |
+          npm install --no-save --no-audit --no-fund @electron/universal@2
+          cat > merge.mjs <<'EOF'
+          import { makeUniversalApp } from '@electron/universal';
+          const here = process.cwd();
+          await makeUniversalApp({ x64AppPath: here + '/x64/Widescreen.app', arm64AppPath: here + '/arm64/Widescreen.app', outAppPath: here + '/universal/Widescreen.app', force: true });
+          EOF
+          mkdir universal
+          node merge.mjs
+          lipo -archs universal/Widescreen.app/Contents/MacOS/Electron
+          lipo -archs universal/Widescreen.app/Contents/Resources/ffmpeg/ffmpeg
+
+      - name: Sign (ad hoc) and verify
+        run: |
+          codesign --force --deep --sign - universal/Widescreen.app
+          codesign --verify --deep --strict --verbose=2 universal/Widescreen.app
+
+      - name: Check 2 - the app for both kinds of Mac
+        id: check2
+        continue-on-error: true
+        timeout-minutes: 15
+        run: node check/mac-check.mjs universal/Widescreen.app out/both-chips --quick
+
+      - name: Disk image
+        run: |
+          mkdir dmg
+          ditto universal/Widescreen.app dmg/Widescreen.app
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname "Widescreen" -srcfolder dmg -ov -format UDZO Widescreen-mac.dmg
+          ls -la Widescreen-mac.dmg
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac
+          retention-days: 7
+          path: |
+            out/
+            Widescreen-mac.dmg
+
+      - name: Add the disk image to the release
+        if: ${{ inputs.publish && steps.check1.outcome == 'success' && steps.check2.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" Widescreen-mac.dmg --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Result
+        run: |
+          echo "check 1 (as published): ${{ steps.check1.outcome }}   check 2 (both chips): ${{ steps.check2.outcome }}"
+          test "${{ steps.check1.outcome }}" = success
+          test "${{ steps.check2.outcome }}" = success
