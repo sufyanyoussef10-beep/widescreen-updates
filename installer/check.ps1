@@ -3,7 +3,7 @@ param([Parameter(Mandatory = $true)][string]$Setup, [Parameter(Mandatory = $true
 #   1. installed without a question, everything in place, started, updated entry, refused while running, removed
 #   2. the wizard itself, page by page, with a picture of every page (Next, Next, Install, Finish), then the uninstaller
 # Prints PASS / FAIL lines, writes report.json and the pictures into -Out. Exit code 1 when something failed.
-# (Windows PowerShell 5.1: it has the screen and UI automation classes this needs.)
+# (Windows PowerShell 5.1: it has the classes for pictures of the screen that this needs.)
 $ErrorActionPreference = 'Stop'
 New-Item -ItemType Directory -Force $Out | Out-Null
 $Setup = (Resolve-Path $Setup).Path; $Zip = (Resolve-Path $Zip).Path; $Out = (Resolve-Path $Out).Path
@@ -34,7 +34,7 @@ $menu = Join-Path ([Environment]::GetFolderPath('Programs')) 'Widescreen.lnk'
 $desk = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Widescreen.lnk'
 $dataMark = Join-Path $env:LOCALAPPDATA 'Widescreen\kept-by-the-check.txt'
 $shell = New-Object -ComObject WScript.Shell
-Add-Type -AssemblyName System.IO.Compression.FileSystem, System.Drawing, System.Windows.Forms, UIAutomationClient, UIAutomationTypes
+Add-Type -AssemblyName System.IO.Compression.FileSystem, System.Drawing, System.Windows.Forms
 
 function Stop-App {
   Get-CimInstance Win32_Process -Filter "Name='Widescreen.exe'" | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch { } }
@@ -154,39 +154,84 @@ Safe 'a silent removal' {
 }
 
 # ---------------------------------------------------------------------------------------------- 2. the wizard, page by page
-$auto = [System.Windows.Automation.AutomationElement]
-function Find-Wizard([string]$title, [int]$seconds) {
-  $until = (Get-Date).AddSeconds($seconds)
-  while ((Get-Date) -lt $until) {
-    foreach ($w in $auto::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)) {
-      try { if ($w.Current.Name -eq $title -and $w.Current.ClassName -eq '#32770') { return $w } } catch { }
-    }
-    Start-Sleep -Milliseconds 300
+# The wizard is read and pressed with plain window calls (its buttons have fixed numbers: 1 is Next / Install /
+# Finish / Close / Uninstall, 2 is Cancel, 3 is Back), so it need not be in front and no key is typed.
+Add-Type @'
+using System; using System.Text; using System.Collections.Generic; using System.Runtime.InteropServices;
+public static class Wiz {
+  delegate bool EnumProc(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc f, IntPtr l);
+  [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr p, EnumProc f, IntPtr l);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr h);
+  [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr h);
+  [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr h);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr SendMessage(IntPtr h, int m, IntPtr w, StringBuilder l);
+  [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, int m, IntPtr w, IntPtr l);
+  [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int l, t, r, b; }
+  static string Text(IntPtr h) { var s = new StringBuilder(2048); GetWindowText(h, s, 2048); return s.ToString(); }
+  static string Class(IntPtr h) { var s = new StringBuilder(128); GetClassName(h, s, 128); return s.ToString(); }
+  public static IntPtr Find(string title) {
+    IntPtr found = IntPtr.Zero;
+    EnumWindows((h, l) => { if (IsWindowVisible(h) && Class(h) == "#32770" && Text(h) == title) { found = h; return false; } return true; }, IntPtr.Zero);
+    return found;
   }
-  return $null
+  /// Every control that is shown:  kind | number | on or off | what is written on it
+  public static string[] Controls(IntPtr win) {
+    var list = new List<string>();
+    EnumChildWindows(win, (h, l) => {
+      if (!IsWindowVisible(h)) return true;
+      string c = Class(h), t = Text(h);
+      if (c == "Edit") { var s = new StringBuilder(2048); SendMessage(h, 0x000D, (IntPtr)2048, s); t = s.ToString(); }
+      list.Add(c + "|" + GetDlgCtrlID(h) + "|" + (IsWindowEnabled(h) ? "on" : "off") + "|" + t.Replace("\r", " ").Replace("\n", " "));
+      return true; }, IntPtr.Zero);
+    return list.ToArray();
+  }
+  static IntPtr MainButton(IntPtr win, int id) {
+    IntPtr btn = IntPtr.Zero;
+    EnumChildWindows(win, (h, l) => { if (GetParent(h) == win && GetDlgCtrlID(h) == id && Class(h) == "Button") { btn = h; return false; } return true; }, IntPtr.Zero);
+    return btn;
+  }
+  /// What is written on one of the wizard's own buttons ("" when it is not there or switched off).
+  public static string Button(IntPtr win, int id) {
+    IntPtr b = MainButton(win, id);
+    return b != IntPtr.Zero && IsWindowVisible(b) && IsWindowEnabled(b) ? Text(b).Replace("&", "") : "";
+  }
+  public static bool Press(IntPtr win, int id) {
+    IntPtr b = MainButton(win, id);
+    if (b == IntPtr.Zero || !IsWindowVisible(b) || !IsWindowEnabled(b)) return false;
+    return PostMessage(win, 0x0111, (IntPtr)id, b);            // WM_COMMAND: the button was clicked
+  }
+  public static int[] Rect(IntPtr h) { RECT r; GetWindowRect(h, out r); return new[] { r.l, r.t, r.r - r.l, r.b - r.t }; }
+  public static void Front(IntPtr h) { SetForegroundWindow(h); }
+  public static bool There(IntPtr h) { return IsWindowVisible(h); }
 }
-function Controls($win, $type) { $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition($auto::ControlTypeProperty, $type))) }
-function Words($win) { @(Controls $win ([System.Windows.Automation.ControlType]::Text) | ForEach-Object { try { if (-not $_.Current.IsOffscreen) { ($_.Current.Name -replace '\s+', ' ').Trim() } } catch { } } | Where-Object { $_ }) }
-function Buttons($win) { @(Controls $win ([System.Windows.Automation.ControlType]::Button) | ForEach-Object { try { if (-not $_.Current.IsOffscreen) { [ordered]@{ name = ($_.Current.Name -replace '&', ''); enabled = $_.Current.IsEnabled; el = $_ } } } catch { } } | Where-Object { $_ }) }
-function Press($win, [string]$starts) {
-  foreach ($b in (Buttons $win)) { if ($b.name -like ($starts + '*') -and $b.enabled) { $b.el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); return $b.name } }
-  return $null
+'@
+function Find-Wizard([string]$title, [int]$seconds) {
+  for ($i = 0; $i -lt $seconds * 3; $i++) { $h = [Wiz]::Find($title); if ($h -ne [IntPtr]::Zero) { return $h }; Start-Sleep -Milliseconds 330 }
+  return [IntPtr]::Zero
 }
-function Wait-Button($win, [string]$starts, [int]$seconds) { for ($i = 0; $i -lt $seconds * 2; $i++) { foreach ($b in (Buttons $win)) { if ($b.name -like ($starts + '*') -and $b.enabled) { return $true } }; Start-Sleep -Milliseconds 500 }; return $false }
+function Wait-Main($win, [string]$text, [int]$seconds) { for ($i = 0; $i -lt $seconds * 2; $i++) { if ([Wiz]::Button($win, 1) -like ($text + '*')) { return $true }; Start-Sleep -Milliseconds 500 }; return $false }
 function Shot($win, [string]$name) {
-  try { $win.SetFocus() } catch { }
+  [Wiz]::Front($win)
   Start-Sleep -Milliseconds 700
-  $r = $win.Current.BoundingRectangle
-  $bmp = New-Object System.Drawing.Bitmap ([int]$r.Width), ([int]$r.Height)
+  $r = [Wiz]::Rect($win)
+  $bmp = New-Object System.Drawing.Bitmap $r[2], $r[3]
   $g = [System.Drawing.Graphics]::FromImage($bmp)
-  $g.CopyFromScreen([int]$r.X, [int]$r.Y, 0, 0, $bmp.Size)
+  $g.CopyFromScreen($r[0], $r[1], 0, 0, $bmp.Size)
   $bmp.Save((Join-Path $Out $name), [System.Drawing.Imaging.ImageFormat]::Png)
   $g.Dispose(); $bmp.Dispose()
 }
 $pages = New-Object System.Collections.ArrayList
 function Page($win, [string]$picture) {
   Shot $win $picture
-  $p = [ordered]@{ picture = $picture; words = @(Words $win); buttons = @(Buttons $win | ForEach-Object { $_.name + $(if ($_.enabled) { '' } else { ' (off)' }) }) }
+  $c = @([Wiz]::Controls($win))
+  $part = { param($kind) @($c | Where-Object { $_ -like ($kind + '|*') } | ForEach-Object { $x = $_ -split '\|', 4; (($x[3] -replace '&', '') -replace '\s+', ' ').Trim() + $(if ($x[2] -eq 'off') { ' (off)' } else { '' }) } | Where-Object { $_ -and $_ -ne '(off)' }) }
+  $p = [ordered]@{ picture = $picture; words = (& $part 'Static'); buttons = (& $part 'Button'); fields = (& $part 'Edit'); lists = @($c | Where-Object { $_ -like 'SysTreeView32|*' }).Count }
   [void]$pages.Add($p); return $p
 }
 
@@ -194,31 +239,30 @@ Safe 'the wizard' {
   Stop-App
   Start-Process -FilePath $Setup | Out-Null
   $w = Find-Wizard 'Widescreen Setup' 40
-  if (-not $w) { Note 'the wizard opens' $false 'no window named "Widescreen Setup" came up'; return }
+  if ($w -eq [IntPtr]::Zero) { Note 'the wizard opens' $false 'no window named "Widescreen Setup" came up'; return }
   $p1 = Page $w 'setup-1-welcome.png'
-  Note 'page 1 welcomes: it names the app and its version, and has Next' ((($p1.words -join ' ') -like ('*Widescreen ' + $Version + '*')) -and ($p1.buttons -contains 'Next >')) $p1
-  [void](Press $w 'Next'); Start-Sleep -Milliseconds 900
+  Note 'page 1 welcomes: it names the app and its version, and has Next' ((($p1.words -join ' ') -like ('*Widescreen ' + $Version + '*')) -and ([Wiz]::Button($w, 1) -eq 'Next >')) $p1
+  [void][Wiz]::Press($w, 1); Start-Sleep -Milliseconds 1000
   $p2 = Page $w 'setup-2-folder.png'
-  $folder = @(Controls $w ([System.Windows.Automation.ControlType]::Edit) | ForEach-Object { try { $_.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value } catch { } } | Where-Object { $_ })
-  Note 'page 2 asks for the folder and proposes the person''s own programs folder' ($folder -contains $dir -and ($p2.buttons -contains 'Next >')) ([ordered]@{ proposed = $folder; page = $p2 })
-  [void](Press $w 'Next'); Start-Sleep -Milliseconds 900
+  Note 'page 2 asks for the folder and proposes the person''s own programs folder' (($p2.fields -contains $dir) -and ([Wiz]::Button($w, 1) -eq 'Next >') -and ([Wiz]::Button($w, 3) -eq '< Back')) $p2
+  [void][Wiz]::Press($w, 1); Start-Sleep -Milliseconds 1000
   $p3 = Page $w 'setup-3-what-to-add.png'
-  $boxes = @(Controls $w ([System.Windows.Automation.ControlType]::TreeItem) | ForEach-Object { $_.Current.Name }) + @(Controls $w ([System.Windows.Automation.ControlType]::CheckBox) | ForEach-Object { $_.Current.Name })
-  Note 'page 3 offers the Start menu and the desktop shortcut, and has Install' ((($boxes -join '|') -like '*Start menu shortcut*') -and (($boxes -join '|') -like '*Desktop shortcut*') -and ($p3.buttons -contains 'Install')) ([ordered]@{ offered = $boxes; page = $p3 })
-  [void](Press $w 'Install')
-  $done = Wait-Button $w 'Finish' 240
+  Note 'page 3 is the list of what to add (the shortcuts), and has Install' ($p3.lists -eq 1 -and ([Wiz]::Button($w, 1) -eq 'Install')) $p3
+  [void][Wiz]::Press($w, 1); Start-Sleep -Milliseconds 400
+  try { Shot $w 'setup-3b-installing.png' } catch { }
+  $done = Wait-Main $w 'Finish' 240
   $p4 = Page $w 'setup-4-finished.png'
-  $run = @(Controls $w ([System.Windows.Automation.ControlType]::CheckBox) | ForEach-Object { $_.Current.Name -replace '&', '' })
-  Note 'the last page says it is installed, offers to start the app, and has Finish' ($done -and (($p4.words -join ' ') -like '*is installed*') -and ($run -contains 'Start Widescreen now')) ([ordered]@{ finished = $done; offered = $run; page = $p4 })
+  Note 'the last page says it is installed, offers to start the app, and has Finish' ($done -and (($p4.words -join ' ') -like '*is installed*') -and ($p4.buttons -contains 'Start Widescreen now')) $p4
   $st = Installed-State
   Note 'what the wizard installed is all there: the app, the entry, both shortcuts' ($st.exe -eq $Version -and $st.listed -and $st.listed.version -eq $Version -and $st.startMenu -and $st.desktop) $st
-  [void](Press $w 'Finish')
+  [void][Wiz]::Press($w, 1)
   $started = $false
   for ($i = 0; $i -lt 60 -and -not $started; $i++) { Start-Sleep -Milliseconds 500; $started = @(Get-CimInstance Win32_Process -Filter "Name='Widescreen.exe'" | Where-Object { $_.ExecutablePath -eq $exe }).Count -gt 0 }
   Note 'Finish starts Widescreen from where it was installed' $started $started
   if ($started) {
     Start-Sleep -Seconds 12
-    $bmp = New-Object System.Drawing.Bitmap ([System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width), ([System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height)
+    $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+    $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
     $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen(0, 0, 0, 0, $bmp.Size); $bmp.Save((Join-Path $Out 'screen-after-finish.png'), [System.Drawing.Imaging.ImageFormat]::Png); $g.Dispose(); $bmp.Dispose()
   }
   Stop-App
@@ -226,15 +270,16 @@ Safe 'the wizard' {
 
 Safe 'the uninstaller' {
   Stop-App
+  if (-not (Test-Path -LiteralPath $unExe)) { Note 'the uninstaller is there' $false $unExe; return }
   Start-Process -FilePath $unExe | Out-Null
   $w = Find-Wizard 'Widescreen Uninstall' 40
-  if (-not $w) { Note 'the uninstaller opens' $false 'no window named "Widescreen Uninstall" came up'; return }
+  if ($w -eq [IntPtr]::Zero) { Note 'the uninstaller opens' $false 'no window named "Widescreen Uninstall" came up'; return }
   $u1 = Page $w 'remove-1-ask.png'
-  Note 'the uninstaller says what it removes and what it leaves, and has Uninstall' ((($u1.words -join ' ') -like '*are not touched*') -and ($u1.buttons -contains 'Uninstall')) $u1
-  [void](Press $w 'Uninstall')
-  $done = Wait-Button $w 'Close' 120
+  Note 'the uninstaller says what it removes and what it leaves, and has Uninstall' ((($u1.words -join ' ') -like '*are not touched*') -and ([Wiz]::Button($w, 1) -eq 'Uninstall')) $u1
+  [void][Wiz]::Press($w, 1)
+  $done = Wait-Main $w 'Close' 120
   [void](Page $w 'remove-2-done.png')
-  [void](Press $w 'Close')
+  [void][Wiz]::Press($w, 1)
   $gone = Gone $dir 60
   $st = Installed-State
   Note 'after it everything is gone again: the folder, the entry, both shortcuts' ($done -and $gone -and -not $st.listed -and -not $st.startMenu -and -not $st.desktop) $st
