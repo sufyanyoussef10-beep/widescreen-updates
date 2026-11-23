@@ -38,10 +38,33 @@ const screen = name => { sh('screencapture', ['-x', path.join(out, name)]); };
 // ---- the Mac this runs on
 fact('macOS', sh('sw_vers', ['-productVersion']));
 fact('chip', sh('uname', ['-m']));
-fact('displays', sh('system_profiler', ['SPDisplaysDataType']).split('\n').filter(l => /Resolution|Chipset|Display Type|Main Display/.test(l)).map(l => l.trim()).join(' ; '));
+const isMac = process.platform === 'darwin';
+fact('displays', sh('system_profiler', ['SPDisplaysDataType']).split('\n').map(l => l.trim()).filter(l => /Resolution|Chipset|Display Type|Main Display|UI Looks/.test(l)).join(' ; '));
 fact('programs in the app are for', sh('lipo', ['-archs', exe]));
 fact('ffmpeg in the app is for', sh('lipo', ['-archs', ffmpeg]));
-fact('signature of the app', sh('codesign', ['-dv', app]).split('\n').filter(l => /Signature|Identifier=|TeamIdentifier|flags/.test(l)).join(' ; ') || sh('codesign', ['-dv', app]).slice(0, 200));
+// (codesign writes what it knows to its error stream)
+fact('signature of the app', sh('/bin/sh', ['-c', 'codesign -dv "$0" 2>&1', app]).split('\n').filter(l => /Signature|Identifier=|TeamIdentifier|flags|not signed/.test(l)).join(' ; '));
+
+// a small PDF with three pages, each filled with its own colour (for the slides)
+function makePdf(file, pages) {
+  const colors = [[0.85, 0.2, 0.2], [0.2, 0.7, 0.3], [0.2, 0.3, 0.85]];
+  const objs = ['<< /Type /Catalog /Pages 2 0 R >>'];
+  const kids = [];
+  for (let i = 0; i < pages; i++) kids.push((3 + i * 2) + ' 0 R');
+  objs.push('<< /Type /Pages /Kids [' + kids.join(' ') + '] /Count ' + pages + ' >>');
+  for (let i = 0; i < pages; i++) {
+    const stream = colors[i % colors.length].join(' ') + ' rg 0 0 960 540 re f';
+    objs.push('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 960 540] /Contents ' + (4 + i * 2) + ' 0 R >>');
+    objs.push('<< /Length ' + stream.length + ' >>\nstream\n' + stream + '\nendstream');
+  }
+  let text = '%PDF-1.4\n';
+  const offs = [];
+  objs.forEach((o, i) => { offs.push(text.length); text += (i + 1) + ' 0 obj\n' + o + '\nendobj\n'; });
+  const xref = text.length;
+  text += 'xref\n0 ' + (objs.length + 1) + '\n0000000000 65535 f \n' + offs.map(o => String(o).padStart(10, '0') + ' 00000 n \n').join('');
+  text += 'trailer\n<< /Size ' + (objs.length + 1) + ' /Root 1 0 R >>\nstartxref\n' + xref + '\n%%EOF\n';
+  fs.writeFileSync(file, text, 'latin1');
+}
 
 // ---- the ffmpeg inside the app
 const ffv = sh(ffmpeg, ['-hide_banner', '-version']).split('\n')[0];
@@ -153,6 +176,44 @@ if (up) {
       return { seconds: Math.round((Date.now() - t0) / 1000), instantJumps: o, dragging: s };`);
     note('the copy for instant jumps is made (how: ' + (r.instantJumps && r.instantJumps.how) + ')', !!(r.instantJumps && r.instantJumps.state === 'ready'), r, false);
     note('the small copy for dragging the playhead is made', !!(r.dragging && r.dragging.state === 'ready'), r.dragging, false);
+  });
+
+  // slides from a PDF
+  await safe('slides', async () => {
+    makePdf(m('t_slides.pdf'), 3);
+    const r = await page(`const col = S.project.layers[0].clips.length; E.addFiles(0, col, [{ path: ${JSON.stringify(m('t_slides.pdf'))} }], false);
+      await until(() => { const c = S.project.layers[0].clips[col]; return c && (c.status === 'ok' || c.status === 'error'); }, 90000);
+      const c = S.project.layers[0].clips[col]; if (!c) return null;
+      E.trigger(0, col); await wait(2500);
+      const g = document.createElement('canvas'); g.width = 64; g.height = 36; const x = g.getContext('2d', { willReadFrequently: true });
+      if (S.preview) S.preview.snapshot(x, 64, 36); const px = x.getImageData(0, 0, 64, 36).data; let red = 0; for (let i = 0; i < px.length; i += 4) if (px[i] > 150 && px[i + 1] < 110 && px[i + 2] < 110) red++;
+      return { kind: c.kind, status: c.status, pages: c.pages ? c.pages.length : 0, error: c.error || '', redPixels: red };`);
+    note('a PDF becomes slides (three pages), and the first one is shown', !!r && r.kind === 'slides' && r.status === 'ok' && r.pages === 3 && r.redPixels > 1500, r, false);
+  });
+
+  // the keyboard, and the words a Mac user reads
+  await safe('keys and words', async () => {
+    const key = async (k, code, vk, modifiers, text) => {
+      await send('Input.dispatchKeyEvent', { type: text ? 'keyDown' : 'rawKeyDown', key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers: modifiers || 0, text });
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers: modifiers || 0 });
+    };
+    const paused = () => page(`const p = E.playing(S.project.layers[0]); return p ? !!p.r.paused : null;`);
+    await page(`E.trigger(0, 0); await wait(1200); if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); return 0;`);
+    const p0 = await paused();
+    await key(' ', 'Space', 32, 0, ' '); await wait(700);
+    const p1 = await paused();
+    note('Space pauses the show', p0 === false && p1 === true, { before: p0, after: p1 }, false);
+    await key(' ', 'Space', 32, 0, ' '); await wait(500);
+    // the key that does on this system what Ctrl does on Windows: Cmd on a Mac
+    await key('a', 'KeyA', 65, (isMac ? 4 : 2) | 8); await wait(900);
+    const ed = await page(`return document.getElementById('mapper').classList.contains('show');`);
+    note((isMac ? 'Cmd' : 'Ctrl') + '+Shift+A opens the Advanced Output editor', ed === true, ed, false);
+    await key('Escape', 'Escape', 27); await wait(500);
+    const words = await page(`document.querySelector('#menubar button[data-menu="app"]').click(); await wait(300);
+      const keys = [...document.querySelectorAll('.menu .mi .k')].map(x => x.textContent);
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await wait(200);
+      return { device: document.getElementById('sndName').textContent, quitKey: keys[keys.length - 1] || '', mac: WS.mac };`);
+    note('the words fit this system: the sound device and the key that quits', isMac ? (words.mac === true && words.device === 'System default device' && words.quitKey === 'Cmd+Q') : (words.device === 'Windows default device' && words.quitKey === 'Alt+F4'), words, false);
   });
 
   // outputs

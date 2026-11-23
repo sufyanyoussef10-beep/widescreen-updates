@@ -87,7 +87,7 @@ jobs:
           mkdir dmg
           ditto universal/Widescreen.app dmg/Widescreen.app
           ln -s /Applications dmg/Applications
-          hdiutil create -volname "Widescreen" -srcfolder dmg -ov -format UDZO Widescreen-mac.dmg
+          hdiutil create -volname "Widescreen" -srcfolder dmg -ov -format ULMO Widescreen-mac.dmg      # (the smallest kind; macOS 10.15 and newer open it)
           ls -la Widescreen-mac.dmg
 
       - uses: actions/upload-artifact@v4
