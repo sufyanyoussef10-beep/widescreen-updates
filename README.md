@@ -6,16 +6,20 @@ Media output for LED screens, projectors and monitors: videos, pictures, sound, 
 
 | Your computer | Download |
 |---|---|
-| Windows | [Widescreen.zip](https://github.com/sufyanyoussef10-beep/widescreen-updates/releases/latest/download/Widescreen.zip) |
+| Windows | [Widescreen-Setup.exe](https://github.com/sufyanyoussef10-beep/widescreen-updates/releases/latest/download/Widescreen-Setup.exe) |
 | Mac (Apple or Intel chip) | [Widescreen-mac.dmg](https://github.com/sufyanyoussef10-beep/widescreen-updates/releases/latest/download/Widescreen-mac.dmg) |
 
 Both links always give the newest version.
 
 ### Windows
 
-1. Unzip the file anywhere (for example into `Documents`; not into Program Files).
-2. Open the folder and double-click **Widescreen.exe**.
+1. Open `Widescreen-Setup.exe` and click **Next**, **Next**, **Install**, **Finish**.
    The first time, Windows may show a blue box "Windows protected your PC", because the app is not registered with Microsoft: press **More info**, then **Run anyway**.
+2. Widescreen is in the Start menu and on the desktop.
+
+It is installed for you only, so Windows does not ask for an administrator. To remove it: **Settings > Apps > Installed apps > Widescreen > Uninstall**. Your compositions and settings are kept.
+
+Without installing: [Widescreen.zip](https://github.com/sufyanyoussef10-beep/widescreen-updates/releases/latest/download/Widescreen.zip), unzip it anywhere (not into Program Files) and start `Widescreen.exe`. A copy you already use this way keeps working and keeps updating itself.
 
 ### Mac
 
@@ -35,7 +39,8 @@ The Mac version needs macOS 13 or newer. Every build is started and checked on a
 
 ## What is here
 
-- `Widescreen.zip`: the whole Windows app, for a first install.
+- `Widescreen-Setup.exe`: the setup program for Windows. It is made on one of GitHub's Windows machines by the recipe in `.github/workflows/windows.yml` from `Widescreen.zip` and the files in `installer/` (with [NSIS](https://nsis.sourceforge.io)). Before it is put here it is tried there: installed, the app started, removed again, and its pages gone through one by one (`installer/check.ps1`).
+- `Widescreen.zip`: the whole Windows app without a setup program.
 - `Widescreen-app.zip` and `latest.json`: what a running Windows copy downloads when it updates, and the list (version, what is new, sizes and SHA-256 fingerprints) it checks its download against.
 - `Widescreen-mac.dmg`: the Mac app for both kinds of Mac. It is made on one of GitHub's Mac machines by the recipe in `.github/workflows/mac.yml`, which first starts the app there and checks that it plays (`check/mac-check.mjs`). The pre-release `mac-test-1` holds the two files that disk image is made from; nobody needs to download them.
 
