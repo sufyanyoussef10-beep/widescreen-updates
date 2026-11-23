@@ -1,0 +1,97 @@
+# Makes the setup program of Widescreen for Windows (Widescreen-Setup.exe: Next, Next, Install) on one of GitHub's
+# Windows machines, from the Widescreen.zip of a release, and tries it there before anything is published:
+# installed without a question and by its wizard page by page, the app started, removed again (installer/check.ps1).
+#
+# Started by hand: Actions > Windows setup > Run workflow (tools\release.ps1 of the project does it for a release).
+# The report and a picture of every page of the wizard are kept with the run for a week (the "windows" artifact).
+name: Windows setup
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'The release that holds Widescreen.zip (the setup program is made from it)'
+        required: true
+        type: string
+      publish:
+        description: 'Add Widescreen-Setup.exe to that release (off = make and check only)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows
+  cancel-in-progress: false
+
+jobs:
+  setup:
+    name: Setup program for Windows
+    runs-on: windows-2022
+    timeout-minutes: 40
+    env:
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Get the app of the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$env:TAG" --repo "$env:GITHUB_REPOSITORY" --pattern 'Widescreen.zip' --pattern 'latest.json' --dir in
+          Expand-Archive -LiteralPath in\Widescreen.zip -DestinationPath app
+          if (-not (Test-Path app\Widescreen.exe)) { throw 'Widescreen.zip does not hold Widescreen.exe at its top' }
+          $version = (Get-Item app\Widescreen.exe).VersionInfo.ProductVersion -replace '\+.*$', ''
+          "the app in release $($env:TAG) is version $version, $((Get-ChildItem app -Recurse -File).Count) files"
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Make the setup program
+        shell: pwsh
+        run: |
+          $mk = (Get-Command makensis -ErrorAction SilentlyContinue).Source
+          if (-not $mk) { $mk = 'C:\Program Files (x86)\NSIS\makensis.exe' }
+          if (-not (Test-Path $mk)) { choco install nsis -y --no-progress; $mk = 'C:\Program Files (x86)\NSIS\makensis.exe' }
+          & $mk /VERSION
+          ""
+          New-Item -ItemType Directory -Force out | Out-Null
+          & $mk /V2 "/DVERSION=$env:VERSION" "/DSOURCE=$((Resolve-Path app).Path)" "/DOUT=$((Get-Location).Path)\Widescreen-Setup.exe" installer\widescreen.nsi
+          if ($LASTEXITCODE -ne 0) { throw 'the setup program could not be made' }
+          Get-Item Widescreen-Setup.exe | ForEach-Object { "{0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB) }
+
+      - name: Check - installed, started, removed, and the wizard page by page
+        id: check
+        continue-on-error: true
+        timeout-minutes: 25
+        shell: powershell
+        run: |
+          & .\installer\check.ps1 -Setup Widescreen-Setup.exe -Version $env:VERSION -Zip in\Widescreen.zip -Out out
+          exit $LASTEXITCODE
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows
+          retention-days: 7
+          path: |
+            out/
+            Widescreen-Setup.exe
+            !out/appdata/**
+            !out/media/**
+
+      - name: Add the setup program to the release
+        if: ${{ inputs.publish && steps.check.outcome == 'success' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$env:TAG" Widescreen-Setup.exe --repo "$env:GITHUB_REPOSITORY" --clobber
+
+      - name: Result
+        shell: pwsh
+        run: |
+          "check: ${{ steps.check.outcome }}"
+          if ('${{ steps.check.outcome }}' -ne 'success') { exit 1 }
