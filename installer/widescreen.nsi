@@ -87,7 +87,8 @@ Var NoEngine
 !insertmacro MUI_PAGE_INSTFILES
 
 !define MUI_FINISHPAGE_TITLE "${APP} is installed"
-!define MUI_FINISHPAGE_TEXT "${APP} ${VERSION} is on this computer. You find it in the Start menu.$\r$\n$\r$\nNew versions come by themselves: when there is one, a green Update button appears at the right of ${APP}'s menu bar.$\r$\n$\r$\nClick Finish to close Setup."
+!define MUI_FINISHPAGE_TEXT_LARGE
+!define MUI_FINISHPAGE_TEXT "${APP} ${VERSION} is on this computer. You find it in the Start menu.$\r$\n$\r$\nNew versions come by themselves: a green Update button then appears in ${APP}'s menu bar.$\r$\n$\r$\nClick Finish to close Setup."
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${EXE}"
 !define MUI_FINISHPAGE_RUN_TEXT "Start ${APP} now"
 !insertmacro MUI_PAGE_FINISH

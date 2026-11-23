@@ -206,6 +206,12 @@ public static class Wiz {
     if (b == IntPtr.Zero || !IsWindowVisible(b) || !IsWindowEnabled(b)) return false;
     return PostMessage(win, 0x0111, (IntPtr)id, b);            // WM_COMMAND: the button was clicked
   }
+  /// Every window that is shown on the desktop: its kind and its title (to see what came up instead of what was expected).
+  public static string[] Titles() {
+    var list = new List<string>();
+    EnumWindows((h, l) => { if (IsWindowVisible(h)) { string t = Text(h); if (t.Length > 0) list.Add(Class(h) + " | " + t); } return true; }, IntPtr.Zero);
+    return list.ToArray();
+  }
   public static int[] Rect(IntPtr h) { RECT r; GetWindowRect(h, out r); return new[] { r.l, r.t, r.r - r.l, r.b - r.t }; }
   public static void Front(IntPtr h) { SetForegroundWindow(h); }
   public static bool There(IntPtr h) { return IsWindowVisible(h); }
@@ -273,7 +279,13 @@ Safe 'the uninstaller' {
   if (-not (Test-Path -LiteralPath $unExe)) { Note 'the uninstaller is there' $false $unExe; return }
   Start-Process -FilePath $unExe | Out-Null
   $w = Find-Wizard 'Widescreen Uninstall' 40
-  if ($w -eq [IntPtr]::Zero) { Note 'the uninstaller opens' $false 'no window named "Widescreen Uninstall" came up'; return }
+  if ($w -eq [IntPtr]::Zero) {
+    $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+    $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+    $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen(0, 0, 0, 0, $bmp.Size); $bmp.Save((Join-Path $Out 'screen-no-uninstaller.png'), [System.Drawing.Imaging.ImageFormat]::Png); $g.Dispose(); $bmp.Dispose()
+    Note 'the uninstaller opens' $false ([ordered]@{ wanted = 'Widescreen Uninstall'; windows = @([Wiz]::Titles()); programs = @(Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(Au_|Un_|Uninstall|Widescreen)' } | ForEach-Object { $_.Name + ' ' + $_.CommandLine }) })
+    return
+  }
   $u1 = Page $w 'remove-1-ask.png'
   Note 'the uninstaller says what it removes and what it leaves, and has Uninstall' ((($u1.words -join ' ') -like '*are not touched*') -and ([Wiz]::Button($w, 1) -eq 'Uninstall')) $u1
   [void][Wiz]::Press($w, 1)
