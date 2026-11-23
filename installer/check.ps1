@@ -177,7 +177,7 @@ public static class Wiz {
   static string Class(IntPtr h) { var s = new StringBuilder(128); GetClassName(h, s, 128); return s.ToString(); }
   public static IntPtr Find(string title) {
     IntPtr found = IntPtr.Zero;
-    EnumWindows((h, l) => { if (IsWindowVisible(h) && Class(h) == "#32770" && Text(h) == title) { found = h; return false; } return true; }, IntPtr.Zero);
+    EnumWindows((h, l) => { if (IsWindowVisible(h) && Class(h) == "#32770" && Text(h).Trim() == title) { found = h; return false; }      // (the uninstaller's title ends in a blank) return true; }, IntPtr.Zero);
     return found;
   }
   /// Every control that is shown:  kind | number | on or off | what is written on it
