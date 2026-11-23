@@ -144,6 +144,20 @@ Safe 'the installed app' {
   Stop-App
 }
 
+Safe 'a copy that does not hold the name' {
+  # as every copy before 1.9.7: here a copy started the way the tests start it, which holds another name
+  Stop-App
+  $old = Start-Process -FilePath $exe -ArgumentList ('--offscreen "--data-dir=' + (Join-Path $Out 'appdata2') + '"') -PassThru
+  Start-Sleep -Seconds 8
+  $held = $false; $m = $null
+  try { $held = [Threading.Mutex]::TryOpenExisting('Widescreen.Running', [ref]$m) } catch { }
+  if ($m) { $m.Dispose() }
+  $code = Run $Setup '/S'
+  $codeUn = Run $unExe ('/S _?=' + $dir)
+  Note 'a running copy that does not hold the name (as copies before 1.9.7) is noticed too: setup program and uninstaller refuse' ((-not $held) -and $code -ne 0 -and $codeUn -ne 0 -and (Test-Path $exe) -and -not $old.HasExited) ([ordered]@{ nameHeld = $held; setup = $code; uninstaller = $codeUn; stillRunning = (-not $old.HasExited) })
+  Stop-App
+}
+
 Safe 'a silent removal' {
   Stop-App
   $p = Start-Process -FilePath $unExe -ArgumentList '/S' -PassThru; [void]$p.WaitForExit(60000)

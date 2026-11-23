@@ -101,12 +101,25 @@ Var NoEngine
 
 ; ---------------------------------------------------------------------------------------------------- checks
 ; Is a copy of Widescreen running? Then nothing is changed: its files are in use, and a show may be on.
+; Since 1.9.7 the app holds a name while it runs. A copy from before does not, and neither does one that was
+; started from another folder with an older version: so the list of this person's running programs is looked at too.
+; (Without that, Finish would "start" the new copy while an old one is open: the old window came to the front.)
 !macro RunningCheck UN
 Function ${UN}CheckRunning
   again:
+    StrCpy $1 0
     System::Call 'kernel32::OpenMutex(i 0x00100000, i 0, t "${RUNNING}") p .r0'
     ${If} $0 != 0
       System::Call 'kernel32::CloseHandle(p r0)'
+      StrCpy $1 1
+    ${Else}
+      nsExec::Exec 'cmd.exe /c tasklist /FI "IMAGENAME eq ${EXE}" /FI "USERNAME eq %USERNAME%" /NH | find /I "${EXE}"'
+      Pop $0
+      ${If} $0 == 0
+        StrCpy $1 1
+      ${EndIf}
+    ${EndIf}
+    ${If} $1 == 1
       MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "${APP} is running.$\r$\n$\r$\nClose it first (nothing is lost: it comes back with your composition), then click Retry." /SD IDCANCEL IDRETRY again
       SetErrorLevel 3
       Abort
